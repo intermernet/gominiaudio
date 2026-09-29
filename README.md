@@ -1,11 +1,18 @@
 # gominiaudio
 
 A native Go implementation of [miniaudio](https://github.com/mackron/miniaudio),
-with an API shaped like [malgo](https://github.com/gen2brain/malgo) — but with
-**no cgo and no C bindings**. The entire library, including the platform
-audio backends, is Go (plus a small amount of assembly on macOS).
+with an API shaped like [malgo](https://github.com/gen2brain/malgo). Every
+desktop backend is **cgo-free**: Windows, macOS and Linux are all driven
+directly, in Go (plus a small amount of assembly on macOS).
 
-**Dependencies:** the Go standard library and `golang.org/x/sys` only.
+Android is the one exception. Go has no libc-call bridge on Linux/Android
+(`syscall/linkname_libc.go` is `aix || darwin || openbsd || solaris`), so the
+`cgo_import_dynamic` trick used on macOS cannot work there and reaching
+AAudio requires cgo. That backend is deliberately the thinnest possible
+shim, and it is the only part of the library that needs a C toolchain.
+
+**Dependencies:** the Go standard library and `golang.org/x/sys` only. No
+third-party packages on any platform.
 
 ## Backends
 
@@ -13,14 +20,40 @@ audio backends, is Go (plus a small amount of assembly on macOS).
 |---------|------------|---------------------------------------------------------------------------|
 | Windows | WASAPI     | COM vtable calls via `syscall`. Shared mode (IAudioClient3 small-period negotiation) and **exclusive mode** (native format probing, event-driven, aligned-buffer re-initialization). MMCSS "Pro Audio" thread priority. |
 | Linux   | PipeWire   | The PipeWire *native protocol* spoken directly over the daemon's Unix socket: SPA POD serialization, memfd-backed buffers, eventfd scheduling. No libpipewire. |
+| Linux   | PulseAudio | The PulseAudio *native protocol* spoken directly over the daemon's Unix socket: tagstruct serialization, cookie/`SCM_CREDENTIALS` auth, credit-based playback flow control. No libpulse. Also drives PipeWire's `pulse-server`. |
 | macOS   | CoreAudio  | `//go:cgo_import_dynamic` symbol binding (the `x/sys/unix` technique) for HAL/AudioUnit calls; the real-time render callbacks are hand-written assembly that copy through a lock-free ring and signal a mach semaphore, so native code never calls into Go |
+| Android | AAudio     | **The only cgo backend.** A thin binding to `libaaudio` (API 26+). The realtime data callback is pure C: it only memcpys between AAudio's buffer and an SPSC ring and signals an eventfd, so the platform's realtime thread never enters the Go runtime — the same principle as the CoreAudio asm callbacks. |
 | all     | Null       | Timer-driven fake device for testing                                       |
 
-Status: **WASAPI is verified on hardware** (enumeration, playback, capture,
-duplex, loopback). PipeWire and CoreAudio compile and vet cleanly
-(cross-compiled for linux/amd64, darwin/amd64, darwin/arm64) but are
-**experimental until exercised on real systems** — the PipeWire backend in
-particular implements the client-node scheduling protocol from scratch.
+Status:
+
+- **WASAPI — verified on hardware.** Enumeration, playback, capture, duplex,
+  loopback and exclusive mode.
+- **PulseAudio — verified against a real daemon.** Connect, authenticate,
+  enumerate sinks and sources, and run both playback and capture streams,
+  tested against a live PulseAudio server. The wire format (command
+  ordinals, tag encodings, sample formats, channel positions) is pinned by
+  unit tests; the integration tests in `pa_integration_linux_test.go` skip
+  automatically when no daemon is reachable.
+- **PipeWire — experimental.** Compiles and vets cleanly but has never been
+  run against a real daemon; it implements the client-node scheduling
+  protocol from scratch, and the `pw_node_activation` struct offsets in
+  particular were written from the PipeWire sources and need validating. On
+  a PipeWire system the PulseAudio backend is the better-tested path today,
+  via `pulse-server`.
+- **CoreAudio — experimental.** Compiles and vets cleanly (darwin/amd64 and
+  darwin/arm64); the hand-written asm callbacks need a real Mac to confirm
+  ABI and struct offsets.
+- **AAudio — experimental, never run on a device.** The cgo bindings
+  compile and vet, the C ring buffer is unit tested (including wrap-around
+  and under/overrun), and the full Go-feeder → ring → data-callback path is
+  exercised against a stubbed AAudio, but no real Android hardware has run
+  it. Device *enumeration* is also inherently limited: AAudio has no
+  enumeration API, so the backend reports a single default playback and
+  capture device and lets the platform route them, as miniaudio does.
+
+Backend priority order is PipeWire → PulseAudio → Null on Linux, and
+AAudio → Null on Android.
 
 ## Latency
 
@@ -234,6 +267,26 @@ go run ./examples/passthrough
 go run ./examples/latency -out "CABLE In" -in "CABLE Output"
 ```
 
+## Building for Android
+
+Android is the only target that needs a C toolchain, because the AAudio
+backend is cgo. Point `CC` at the NDK's clang for the API level and ABI you
+are targeting (26 or later — AAudio does not exist below that):
+
+```sh
+export ANDROID_NDK_HOME=/path/to/android-ndk
+export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+CGO_ENABLED=1 GOOS=android GOARCH=arm64   CC="$TOOLCHAIN/aarch64-linux-android26-clang"   go build ./...
+```
+
+`gomobile bind` works too and sets `CC` for you. Every other platform builds
+with `CGO_ENABLED=0` and needs no C compiler at all.
+
+Note that `GOOS=android` also satisfies the `linux` build tag, so the
+PipeWire and PulseAudio backends carry an explicit `!android` constraint and
+Android gets its own dispatch in `backend_dispatch_android.go`.
+
 ## Testing
 
 ```sh
@@ -243,6 +296,15 @@ go test ./...
 The test suite covers the DSP core (conversion round-trips, resampler
 ratios, filter stability), the WAV codec, data sources, the node graph, the
 engine, and the device lifecycle against the Null backend.
+
+On Linux it additionally runs the PulseAudio protocol tests, which pin the
+wire format, plus integration tests against a real daemon. Those skip
+automatically when no PulseAudio server is reachable, so they are safe to
+run anywhere. One of them plays an audible tone and is opt-in:
+
+```sh
+GOMINIAUDIO_AUDIO_TEST=1 go test -run TestPulsePlaybackTone -v
+```
 
 ## Differences from miniaudio
 

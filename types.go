@@ -110,28 +110,28 @@ type Channel uint8
 
 // Channel positions, mirroring MA_CHANNEL_*.
 const (
-	ChannelNone           Channel = 0
-	ChannelMono           Channel = 1
-	ChannelFrontLeft      Channel = 2
-	ChannelFrontRight     Channel = 3
-	ChannelFrontCenter    Channel = 4
-	ChannelLFE            Channel = 5
-	ChannelBackLeft       Channel = 6
-	ChannelBackRight      Channel = 7
+	ChannelNone             Channel = 0
+	ChannelMono             Channel = 1
+	ChannelFrontLeft        Channel = 2
+	ChannelFrontRight       Channel = 3
+	ChannelFrontCenter      Channel = 4
+	ChannelLFE              Channel = 5
+	ChannelBackLeft         Channel = 6
+	ChannelBackRight        Channel = 7
 	ChannelFrontLeftCenter  Channel = 8
 	ChannelFrontRightCenter Channel = 9
-	ChannelBackCenter     Channel = 10
-	ChannelSideLeft       Channel = 11
-	ChannelSideRight      Channel = 12
-	ChannelTopCenter      Channel = 13
-	ChannelTopFrontLeft   Channel = 14
-	ChannelTopFrontCenter Channel = 15
-	ChannelTopFrontRight  Channel = 16
-	ChannelTopBackLeft    Channel = 17
-	ChannelTopBackCenter  Channel = 18
-	ChannelTopBackRight   Channel = 19
-	ChannelAux0           Channel = 20
-	ChannelAux31          Channel = 51
+	ChannelBackCenter       Channel = 10
+	ChannelSideLeft         Channel = 11
+	ChannelSideRight        Channel = 12
+	ChannelTopCenter        Channel = 13
+	ChannelTopFrontLeft     Channel = 14
+	ChannelTopFrontCenter   Channel = 15
+	ChannelTopFrontRight    Channel = 16
+	ChannelTopBackLeft      Channel = 17
+	ChannelTopBackCenter    Channel = 18
+	ChannelTopBackRight     Channel = 19
+	ChannelAux0             Channel = 20
+	ChannelAux31            Channel = 51
 
 	ChannelLeft  = ChannelFrontLeft
 	ChannelRight = ChannelFrontRight
@@ -207,7 +207,11 @@ const (
 	BackendCoreAudio Backend = 1
 	BackendPipeWire  Backend = 2
 	BackendNull      Backend = 3
-	BackendCount             = 4
+	// Backends added after the initial set keep their numbering stable by
+	// appending here rather than renumbering Null.
+	BackendPulseAudio Backend = 4
+	BackendAAudio     Backend = 5
+	BackendCount              = 6
 )
 
 // String returns the backend name, mirroring ma_get_backend_name.
@@ -219,6 +223,10 @@ func (b Backend) String() string {
 		return "Core Audio"
 	case BackendPipeWire:
 		return "PipeWire"
+	case BackendPulseAudio:
+		return "PulseAudio"
+	case BackendAAudio:
+		return "AAudio"
 	case BackendNull:
 		return "Null"
 	default:

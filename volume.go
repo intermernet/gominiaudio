@@ -12,8 +12,8 @@ func VolumeDBToLinear(gain float32) float32 {
 	return float32(math.Pow(10, float64(gain)/20))
 }
 
-// clipSamplesF32Impl is set to a SIMD implementation on capable CPUs (see
-// volume_simd_amd64.go). Otherwise it falls back to the scalar version.
+// clipSamplesF32Impl is set to a SIMD implementation on capable hardware
+// (see volume_simd.go). Otherwise it falls back to the scalar version.
 var clipSamplesF32Impl func(dst, src []float32, count uint64) = clipSamplesF32Scalar
 
 // copyApplyVolumeF32Impl is the inner implementation selected at init time.

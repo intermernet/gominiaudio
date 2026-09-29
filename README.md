@@ -96,31 +96,43 @@ The DSP path contains several latency and throughput improvements:
   the audio thread needs, so a preempted control goroutine cannot stall
   processing.
 
-### SIMD acceleration (AMD64, `GOEXPERIMENT=simd`)
+### SIMD acceleration (`GOEXPERIMENT=simd`, requires Go 1.27+)
 
-When built with `GOEXPERIMENT=simd` on amd64, the package activates AVX2
-(and FMA) vector paths for the hottest DSP operations.  CPU feature
-detection is done at package `init` via `simd/archsimd.X86.AVX2()` /
-`.FMA()`; the scalar fallbacks remain active on CPUs that lack those
-extensions.
+When built with `GOEXPERIMENT=simd`, the package activates vector paths for
+the hottest DSP operations using the standard library's portable
+[`simd`](https://pkg.go.dev/simd) package. Unlike the older
+`simd/archsimd`-only build, these paths are not amd64-specific: the same
+source compiles to AVX2 on amd64, NEON on arm64, and wasm SIMD128 on wasm,
+with a pure-Go emulated fallback on anything else. Hardware detection is
+done at package `init` via `simd.Emulated()`; the scalar fallbacks remain
+active on that emulated path, since a hand-written scalar loop beats the
+generic per-element emulation.
 
-| Operation | File | Instruction set | Width | Speedup |
+One kernel — the no-dither f32→s16 conversion — needs a saturating pack and
+a cross-lane permute that the portable package doesn't expose, so it stays
+on the lower-level, amd64-only `simd/archsimd` package, gated by
+`archsimd.X86.AVX2()`.
+
+| Operation | File | Backend | Width | Speedup |
 |---|---|---|---|---|
-| `ClipSamplesF32` | `volume_simd_amd64.go` | AVX2 VMAXPS/VMINPS | 8 f32/iter | ~8× |
-| `CopyAndApplyVolumeFactorF32` | `volume_simd_amd64.go` | AVX2 VMULPS | 8 f32/iter | ~8× |
-| `CopyAndApplyVolumeAndClipSamplesF32` | `volume_simd_amd64.go` | AVX2 MUL+MAX+MIN | 8 f32/iter | ~8× |
-| `MixPCMFramesF32` (dst+=src\*vol) | `volume_simd_amd64.go` | AVX2+FMA VFMADD213PS | 8 f32/iter | ~8× |
-| Channel weight mixing | `channel_converter_simd_amd64.go` | AVX2+FMA VFMADD213PS | 8 out-ch/iter | 6–8× |
-| Biquad filter (ch≥8) | `filters_simd_amd64.go` | AVX2+FMA | 8 ch/iter | ~4× |
-| Linear resampler interpolation (ch≥8) | `resampler_simd_amd64.go` | AVX2+FMA VFMADD213PS | 8 ch/iter | ~4× |
-| f32 → s16 (no dither) | `format_conversion_simd_amd64.go` | AVX2 VCVTTPS2DQ+VPACKSSDW+VPERMQ | 8 samples/iter | ~4× |
-| s16 → f32 | `format_conversion_simd_amd64.go` | AVX2 VPMOVSXWD+VCVTDQ2PS | 8 samples/iter | ~4× |
+| `ClipSamplesF32` | `volume_simd.go` | simd (Max/Min) | native/iter | ~8× on AVX2 |
+| `CopyAndApplyVolumeFactorF32` | `volume_simd.go` | simd (Mul) | native/iter | ~8× on AVX2 |
+| `CopyAndApplyVolumeAndClipSamplesF32` | `volume_simd.go` | simd (Mul+Max+Min) | native/iter | ~8× on AVX2 |
+| `MixPCMFramesF32` (dst+=src\*vol) | `volume_simd.go` | simd (MulAdd) | native/iter | ~8× on AVX2 |
+| Channel weight mixing | `channel_converter_simd.go` | simd (MulAdd) | native out-ch/iter | 6–8× on AVX2 |
+| Biquad filter (ch≥native width) | `filters_simd.go` | simd (MulAdd) | native ch/iter | ~4× on AVX2 |
+| Linear resampler interpolation (ch≥native width) | `resampler_simd.go` | simd (MulAdd) | native ch/iter | ~4× on AVX2 |
+| f32 → s16 (no dither) | `format_conversion_simd_amd64.go` | archsimd, AVX2 VCVTTPS2DQ+VPACKSSDW+VPERMQ | 8 samples/iter | ~4× |
+| s16 → f32 | `format_conversion_simd_amd64.go` | archsimd, AVX2 VPMOVSXWD+VCVTDQ2PS | 8 samples/iter | ~4× |
 
-The Biquad and per-frame resampler SIMD paths only engage at ≥8 channels;
-at typical mono/stereo counts the register-resident scalar specialisations
-above are faster, since these operations do not vectorise across frames.
-The f32→s16 kernel reorders the `VPACKSSDW` output with `VPERMQ`, because
-that instruction packs each 128-bit lane independently.
+"native" width is whatever `simd.Float32s.Len()` reports for the build's
+target hardware (e.g. 8 on AVX2, 4 on AVX-only or NEON) — it's a runtime
+value, not a compile-time constant, so the Biquad and per-frame resampler
+SIMD paths compare the channel count against it directly rather than a
+hardcoded 8. Below that width, the register-resident scalar specialisations
+are faster, since these operations do not vectorise across frames. The
+f32→s16 kernel reorders the `VPACKSSDW` output with `VPERMQ`, because that
+instruction packs each 128-bit lane independently.
 
 To build with SIMD support:
 
@@ -129,10 +141,15 @@ GOEXPERIMENT=simd go build ./...
 GOEXPERIMENT=simd go test ./...
 ```
 
-The `simd/archsimd` package is part of the Go standard library starting
-with Go 1.26 and is guarded by `GOEXPERIMENT=simd`.  It is not subject to
-the Go 1 compatibility promise.  When `GOEXPERIMENT` is unset the package
-compiles normally and runs with scalar implementations on all platforms.
+Both `simd` and `simd/archsimd` are experimental standard library packages
+guarded by `GOEXPERIMENT=simd`, and are not subject to the Go 1
+compatibility promise. `simd` is new in Go 1.27; `simd/archsimd` shipped
+experimentally in Go 1.26 and had its amd64 API revised in Go 1.27 (its
+full-vector `LoadX`/`.Store` now take slices directly — the old
+`LoadXSlice`/`.StoreSlice` names are gone — and array-pointer loads/stores
+moved to `LoadXArray`/`.StoreArray`). When `GOEXPERIMENT` is unset the
+package compiles normally and runs with scalar implementations on all
+platforms.
 
 ## API overview
 

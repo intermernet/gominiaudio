@@ -403,7 +403,7 @@ func SilencePCMFrames(dst []byte, frameCount uint64, format Format, channels uin
 }
 
 // channelConvertWeightsImpl is the weight-mixing implementation; replaced at
-// init time by a SIMD version on capable CPUs (channel_converter_simd_amd64.go).
+// init time by a SIMD version on capable hardware (channel_converter_simd.go).
 var channelConvertWeightsImpl = channelConvertWeightsScalar
 
 // channelConvertWeights routes to the active implementation.

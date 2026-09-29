@@ -33,21 +33,21 @@ func convertF32ToS16SIMD(dst []byte, src []float32, n int) {
 	scale := archsimd.BroadcastFloat32x8(32767.0)
 	lo := archsimd.BroadcastFloat32x8(-1)
 	hi := archsimd.BroadcastFloat32x8(1)
-	quadOrder := archsimd.LoadUint64x4(&s16PackQuadOrder)
+	quadOrder := archsimd.LoadUint64x4Array(&s16PackQuadOrder)
 
 	i := 0
 	if n >= 8 {
 		d16 := bytesToS16(dst)
 		for ; i <= n-8; i += 8 {
 			// Clamp to [-1, 1], scale, truncate float32 → int32.
-			v := archsimd.LoadFloat32x8Slice(src[i:]).Max(lo).Min(hi).Mul(scale)
+			v := archsimd.LoadFloat32x8(src[i:]).Max(lo).Min(hi).Mul(scale)
 			i32 := v.ConvertToInt32()
 			// Pack int32 → int16 with signed saturation. VPACKSSDW works
 			// per-128-bit-lane, so reorder the 64-bit quads before taking
 			// the low half to get the 8 contiguous results.
 			packed := i32.SaturateToInt16ConcatGrouped(i32)
 			ordered := packed.AsUint64x4().Permute(quadOrder).AsInt16x16()
-			ordered.GetLo().Store((*[8]int16)(unsafe.Pointer(&d16[i])))
+			ordered.GetLo().StoreArray((*[8]int16)(unsafe.Pointer(&d16[i])))
 		}
 	}
 	// Scalar tail.
@@ -67,8 +67,8 @@ func convertS16ToF32SIMD(dst []float32, src []byte, n int) {
 	if n >= 8 {
 		s16 := bytesToS16(src)
 		for ; i <= n-8; i += 8 {
-			i16vec := archsimd.LoadInt16x8((*[8]int16)(unsafe.Pointer(&s16[i])))
-			i16vec.ExtendToInt32().ConvertToFloat32().Mul(inv).StoreSlice(dst[i:])
+			i16vec := archsimd.LoadInt16x8Array((*[8]int16)(unsafe.Pointer(&s16[i])))
+			i16vec.ExtendToInt32().ConvertToFloat32().Mul(inv).Store(dst[i:])
 		}
 	}
 	// Scalar tail.
